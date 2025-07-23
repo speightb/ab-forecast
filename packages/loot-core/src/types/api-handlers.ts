@@ -140,6 +140,16 @@ export interface ApiHandlers {
     cutoff?: Date;
   }) => Promise<number>;
 
+  'api/account-forecast': (arg: { id: string; days?: number }) => Promise<{
+    startingBalance: number;
+    forecast: Array<{
+      date: string;
+      amount: number;
+      name?: string;
+      balance: number;
+    }>;
+  }>;
+
   'api/categories-get': (arg: {
     grouped;
   }) => Promise<Array<APICategoryGroupEntity | APICategoryEntity>>;

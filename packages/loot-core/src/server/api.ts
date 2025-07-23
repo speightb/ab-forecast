@@ -615,6 +615,11 @@ handlers['api/account-balance'] = withMutation(async function ({
   return handlers['account-balance']({ id, cutoff });
 });
 
+handlers['api/account-forecast'] = withMutation(async function ({ id, days }) {
+  checkFileOpen();
+  return handlers['account-forecast']({ id, days });
+});
+
 handlers['api/categories-get'] = async function ({
   grouped,
 }: { grouped? } = {}) {
