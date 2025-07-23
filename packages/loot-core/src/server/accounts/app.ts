@@ -1,3 +1,4 @@
+import * as d from 'date-fns';
 import { t } from 'i18next';
 import { v4 as uuidv4 } from 'uuid';
 
@@ -7,8 +8,15 @@ import * as connection from '../../platform/server/connection';
 import { isNonProductionEnvironment } from '../../shared/environment';
 import { dayFromDate } from '../../shared/months';
 import * as monthUtils from '../../shared/months';
+import { q } from '../../shared/query';
+import {
+  getDateWithSkippedWeekend,
+  getScheduledAmount,
+  recurConfigToRSchedule,
+} from '../../shared/schedules';
 import { amountToInteger } from '../../shared/util';
 import {
+  ScheduleEntity,
   AccountEntity,
   CategoryEntity,
   SyncServerGoCardlessAccount,
@@ -19,6 +27,7 @@ import {
   ImportTransactionEntity,
 } from '../../types/models';
 import { createApp } from '../app';
+import { aqlQuery } from '../aql';
 import * as db from '../db';
 import {
   APIError,
@@ -32,6 +41,7 @@ import { get, post } from '../post';
 import { getServer } from '../server-config';
 import { batchMessages } from '../sync';
 import { undoable, withUndo } from '../undo';
+import { Schedule as RSchedule, type IRuleOptions } from '../util/rschedule';
 
 import * as link from './link';
 import { getStartingBalancePayee } from './payees';
@@ -64,6 +74,7 @@ export type AccountHandlers = {
   'simplefin-batch-sync': typeof simpleFinBatchSync;
   'transactions-import': typeof importTransactions;
   'account-unlink': typeof unlinkAccount;
+  'account-forecast': typeof getAccountForecast;
 };
 
 async function updateAccount({
@@ -111,6 +122,85 @@ async function getAccountProperties({ id }: { id: AccountEntity['id'] }) {
   return {
     balance: balanceResult?.balance || 0,
     numTransactions: countResult?.count || 0,
+  };
+}
+
+async function getAccountForecast({
+  id,
+  days = 30,
+}: {
+  id: AccountEntity['id'];
+  days?: number;
+}) {
+  const start = monthUtils.currentDay();
+  const end = monthUtils.addDays(start, days);
+
+  const startingBalance = await getAccountBalance({ id, cutoff: start });
+
+  const { data: schedules } = await aqlQuery(
+    q('schedules')
+      .filter({
+        completed: false,
+        '_account.closed': false,
+        $or: [{ _account: id }, { 'payee.transfer_acct': id }],
+      })
+      .select('*'),
+  );
+
+  const upcomingDatesFromConfig = (
+    config: ScheduleEntity['_date'],
+    count: number,
+  ) => {
+    const rules = recurConfigToRSchedule(config) as IRuleOptions[];
+    const schedule = new RSchedule({ rrules: rules });
+
+    return schedule
+      .occurrences({ start: d.startOfDay(new Date()), take: count })
+      .toArray()
+      .map(date =>
+        config.skipWeekend
+          ? getDateWithSkippedWeekend(
+              date.date,
+              config.weekendSolveMode ?? 'after',
+            )
+          : date.date,
+      )
+      .map(date => monthUtils.dayFromDate(date));
+  };
+
+  const events: Array<{
+    date: string;
+    amount: number;
+    name?: string;
+  }> = [];
+
+  for (const schedule of schedules as ScheduleEntity[]) {
+    const dates = upcomingDatesFromConfig(schedule._date, days);
+    const baseAmount = getScheduledAmount(schedule._amount);
+    const sign = schedule._account === id ? 1 : -1;
+
+    for (const date of dates) {
+      if (date >= start && date <= end) {
+        events.push({
+          date,
+          amount: sign * baseAmount,
+          name: schedule.name ?? undefined,
+        });
+      }
+    }
+  }
+
+  events.sort((a, b) => a.date.localeCompare(b.date));
+
+  let running = startingBalance;
+  const forecast = events.map(event => {
+    running += event.amount;
+    return { ...event, balance: running };
+  });
+
+  return {
+    startingBalance,
+    forecast,
   };
 }
 
@@ -1234,3 +1324,4 @@ app.method('accounts-bank-sync', accountsBankSync);
 app.method('simplefin-batch-sync', simpleFinBatchSync);
 app.method('transactions-import', mutator(undoable(importTransactions)));
 app.method('account-unlink', mutator(unlinkAccount));
+app.method('account-forecast', getAccountForecast);

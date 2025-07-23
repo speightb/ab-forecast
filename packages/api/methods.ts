@@ -156,6 +156,10 @@ export function getAccountBalance(id, cutoff?) {
   return send('api/account-balance', { id, cutoff });
 }
 
+export function getAccountForecast(id, days?) {
+  return send('api/account-forecast', { id, days });
+}
+
 export function getCategoryGroups() {
   return send('api/category-groups-get');
 }
